@@ -63,6 +63,7 @@
     <option value="31.5966,130.5571">鹿児島</option>
     <option value="26.2124,127.6809">那覇</option>
     <option value="gps">📍 現在地</option>
+    <option value="" disabled>📌 地図で選んだ地点</option>
   </select>
   <button id="radarBtn" title="気象レーダーの実況（直近）を重ねる">実況レーダー</button>
   <span id="status">読み込み中…</span>
@@ -109,22 +110,31 @@ function colorFor(v){
 })();
 
 // ---------- 地図 ----------
-const map = L.map('map', { zoomControl:false, attributionControl:true }).setView([35.6812,139.7671], 8);
+// 前回の地点・表示範囲を復元（このブラウザに保存）
+const STORE = 'rainRadarState.v1';
+function loadState(){ try { return JSON.parse(localStorage.getItem(STORE)) || null; } catch(e){ return null; } }
+function saveState(patch){ try { localStorage.setItem(STORE, JSON.stringify({ ...(loadState()||{}), ...patch })); } catch(e){} }
+const saved = loadState() || {};
+const sp = saved.point || { lat:35.6812, lon:139.7671, name:'東京', city:'35.6812,139.7671' };
+const sv = saved.view || { lat:sp.lat, lon:sp.lon, zoom:8 };
+
+const map = L.map('map', { zoomControl:false, attributionControl:true }).setView([sv.lat, sv.lon], sv.zoom);
 L.control.zoom({ position:'topright' }).addTo(map);
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 18, className: 'dark-tiles',
   attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
 }).addTo(map);
 const pane = map.createPane('rain'); pane.style.zIndex = 450; pane.style.pointerEvents = 'none';
-let marker = L.circleMarker([35.6812,139.7671], { radius:7, color:'#fff', weight:2, fillColor:'#4cc3ff', fillOpacity:1 }).addTo(map);
+let marker = L.circleMarker([sp.lat, sp.lon], { radius:7, color:'#fff', weight:2, fillColor:'#4cc3ff', fillOpacity:1 }).addTo(map);
 
 // ---------- 状態 ----------
 const N = 11;                 // 格子数（N×N 地点）
 const HOURS = 25;             // 0〜24時間後
 let grid = null;              // { lats, lons, times, vals[h][i][j] }
 let hour = 0, overlay = null, playing = null;
-let point = { lat:35.6812, lon:139.7671, name:'東京', series:null };
+let point = { lat:sp.lat, lon:sp.lon, name:sp.name, series:null };
 const $ = id => document.getElementById(id);
+$('city').value = [...$('city').options].some(o => o.value === sp.city) ? sp.city : '';
 const status = t => $('status').textContent = t;
 
 function fmtTime(iso){ const d = new Date(iso); return d.toLocaleString('ja-JP',{month:'numeric',day:'numeric',weekday:'short',hour:'2-digit',minute:'2-digit'}); }
@@ -231,8 +241,10 @@ function updateHere(){
 }
 function setHour(h){ hour = h; $('slider').value = h; draw(); }
 
-function setPoint(lat, lon, name, zoom){
+function setPoint(lat, lon, name, zoom, city = ''){
   point = { lat, lon, name, series:null };
+  $('city').value = city;
+  saveState({ point: { lat, lon, name, city } });
   marker.setLatLng([lat,lon]);
   map.setView([lat,lon], zoom ?? map.getZoom());
   loadPoint();
@@ -251,15 +263,19 @@ $('city').onchange = e => {
     if (!navigator.geolocation){ status('現在地を取得できません'); return; }
     status('現在地を取得中…');
     navigator.geolocation.getCurrentPosition(
-      p => setPoint(p.coords.latitude, p.coords.longitude, '現在地', 9),
+      p => setPoint(p.coords.latitude, p.coords.longitude, '現在地', 9, 'gps'),
       () => status('現在地の許可がありません'), { timeout:10000 });
   } else {
     const [la,lo] = v.split(',').map(Number);
-    setPoint(la, lo, e.target.selectedOptions[0].text, 8);
+    setPoint(la, lo, e.target.selectedOptions[0].text, 8, v);
   }
 };
 map.on('click', e => setPoint(e.latlng.lat, e.latlng.lng, `${e.latlng.lat.toFixed(2)}, ${e.latlng.lng.toFixed(2)}`));
-let t; map.on('moveend', () => { clearTimeout(t); t = setTimeout(loadGrid, 400); });
+let t; map.on('moveend', () => {
+  const c = map.getCenter();
+  saveState({ view: { lat:c.lat, lon:c.lng, zoom:map.getZoom() } });
+  clearTimeout(t); t = setTimeout(loadGrid, 400);
+});
 document.addEventListener('keydown', e => {
   if (e.key==='ArrowRight') setHour(Math.min(hour+1, +$('slider').max));
   if (e.key==='ArrowLeft') setHour(Math.max(hour-1, 0));
@@ -280,6 +296,12 @@ $('radarBtn').onclick = async () => {
 };
 
 loadGrid(); loadPoint();
+// 前回「現在地」を選んでいた場合は位置を取り直す
+if (sp.city === 'gps' && navigator.geolocation){
+  navigator.geolocation.getCurrentPosition(
+    p => setPoint(p.coords.latitude, p.coords.longitude, '現在地', undefined, 'gps'),
+    () => {}, { timeout:10000, maximumAge:600000 });
+}
 </script>
 </body>
 </html>
